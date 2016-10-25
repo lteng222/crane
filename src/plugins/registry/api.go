@@ -32,9 +32,15 @@ const (
 	CodeRegistryGetBasicAuthFailed        = "400-14008"
 	CodeRegistryUnauthorized              = "401-14009"
 	CodeRegistryMakeTokenFailed           = "503-14010"
+	CodeNamespaceParamError               = "503-14011"
+	CodeNamespaceMisMatchedPatternError   = "503-14012"
+	CodeSaveNamespaceError                = "503-14013"
+	CodeGetNamespaceError                 = "503-14014"
 )
 
+// TODO (wtzhou) move the regex match into BeforeSave refer: http://motion-express.com/blog/gorm:-a-simple-guide-on-crud
 const manifestPattern = `^application/vnd.docker.distribution.manifest.v\d`
+const namespacePattern = `^[\da-z][\da-z_\-]{0,28}[\da-z]$`
 
 type Registry struct {
 	DbClient      *gorm.DB
@@ -63,6 +69,7 @@ func NewRegistry(AccountAuthenticator string, PrivateKeyPath string, RegistryAdd
 }
 
 func (registry *Registry) migrateTable() {
+	registry.DbClient.Set("gorm:table_options", "ENGINE=InnoDB").AutoMigrate(&NamespaceEmail{})
 	registry.DbClient.Set("gorm:table_options", "ENGINE=InnoDB").AutoMigrate(&Image{})
 	registry.DbClient.Set("gorm:table_options", "ENGINE=InnoDB").AutoMigrate(&Tag{})
 	registry.DbClient.Set("gorm:table_options", "ENGINE=InnoDB").AutoMigrate(&ImageAccess{})
@@ -103,6 +110,67 @@ func (registry *Registry) Token(ctx *gin.Context) {
 
 	//fixed format
 	ctx.JSON(http.StatusOK, gin.H{"token": rawToken})
+}
+
+func (registry *Registry) Namespace(ctx *gin.Context) {
+	if ctx.Request.Method == "POST" {
+		account_, found := ctx.Get("account")
+		if !found {
+			craneerr := cranerror.NewError(CodeRegistryUnauthorized, "invalid user")
+			httpresponse.Error(ctx, craneerr)
+			return
+		}
+		ns := &Namespace{}
+		if err := ctx.BindJSON(&ns); err != nil {
+			switch jsonErr := err.(type) {
+			case *json.SyntaxError:
+				log.Errorf("Namespace JSON syntax error at byte %v: %s", jsonErr.Offset, jsonErr.Error())
+			case *json.UnmarshalTypeError:
+				log.Errorf("Unexpected type at by type %v. Expected %s but received %s.",
+					jsonErr.Offset, jsonErr.Type, jsonErr.Value)
+			}
+			craneerr := cranerror.NewError(CodeNamespaceParamError, err.Error())
+			httpresponse.Error(ctx, craneerr)
+			return
+		}
+		if matched, _ := regexp.MatchString(namespacePattern, ns.Namespace); !matched {
+			craneerr := cranerror.NewError(CodeNamespaceMisMatchedPatternError, "Namespace mis-matched pattern")
+			httpresponse.Error(ctx, craneerr)
+			return
+		}
+
+		account := account_.(auth.Account)
+		namespaceEmail := &NamespaceEmail{
+			Namespace:    ns.Namespace,
+			AccountEmail: account.Email,
+		}
+		if err := registry.DbClient.Save(namespaceEmail).Error; err != nil {
+			craneerr := cranerror.NewError(CodeSaveNamespaceError, err.Error())
+			httpresponse.Error(ctx, craneerr)
+			return
+		}
+		httpresponse.Ok(ctx, gin.H{})
+		return
+	} else if ctx.Request.Method == "GET" {
+		account_, found := ctx.Get("account")
+		if !found {
+			craneerr := cranerror.NewError(CodeRegistryUnauthorized, "invalid user")
+			httpresponse.Error(ctx, craneerr)
+			return
+		}
+		account := account_.(auth.Account)
+		var namespaceEmail NamespaceEmail
+		err := registry.DbClient.Where("account_email = ?", account.Email).Find(&namespaceEmail).Error
+		if err != nil {
+			craneerr := cranerror.NewError(CodeGetNamespaceError, err.Error())
+			httpresponse.Error(ctx, craneerr)
+			return
+		}
+		httpresponse.Ok(ctx, namespaceEmail)
+		return
+	} else {
+		return
+	}
 }
 
 func (registry *Registry) Authenticate(principal, password string) bool {
@@ -211,10 +279,10 @@ func (registry *Registry) MineRepositories(ctx *gin.Context) {
 	var images []*Image
 	var err error
 	if len(keywords) > 0 {
-		err = registry.DbClient.Where("namespace = ? AND (namespace like ? OR image like ?)", RegistryNamespaceForAccount(account),
+		err = registry.DbClient.Where("namespace = ? AND (namespace like ? OR image like ?)", registry.RegistryNamespaceForAccount(account),
 			LikeParam(keywords), LikeParam(keywords)).Order("created_at DESC").Find(&images).Error
 	} else {
-		err = registry.DbClient.Where("namespace = ?", RegistryNamespaceForAccount(account)).Order("created_at DESC").Find(&images).Error
+		err = registry.DbClient.Where("namespace = ?", registry.RegistryNamespaceForAccount(account)).Order("created_at DESC").Find(&images).Error
 	}
 	if err != nil {
 		craneerr := cranerror.NewError(CodeRegistryCatalogListError, err.Error())

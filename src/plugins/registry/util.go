@@ -158,7 +158,7 @@ func (registry *Registry) GetPermission(username, namespace, image string) strin
 		return "R"
 	}
 
-	if RegistryNamespaceForEmail(username) == namespace { // for user access himself's repository
+	if registry.registryNamespaceForEmail(username) == namespace { // for user access himself's repository
 		return "RW"
 	}
 
@@ -183,10 +183,20 @@ func (registry *Registry) GenTokenForUI(username, service, scope string) (string
 	return registry.MakeToken(registry.PrivateKeyPath, username, service, access)
 }
 
-func RegistryNamespaceForAccount(a auth.Account) string {
-	return a.Email[0:strings.Index(a.Email, "@")]
+func (registry *Registry) RegistryNamespaceForAccount(a auth.Account) string {
+	var namespaceEmail NamespaceEmail
+	err := registry.DbClient.Where("account_email = ?", a.Email).Find(&namespaceEmail)
+	if err != nil {
+		return ""
+	}
+	return namespaceEmail.Namespace
 }
 
-func RegistryNamespaceForEmail(email string) string {
-	return email[0:strings.Index(email, "@")]
+func (registry *Registry) registryNamespaceForEmail(email string) string {
+	var namespaceEmail NamespaceEmail
+	err := registry.DbClient.Where("account_email = ?", email).Find(&namespaceEmail)
+	if err != nil {
+		return ""
+	}
+	return namespaceEmail.Namespace
 }

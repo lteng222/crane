@@ -41,6 +41,17 @@ type Request struct {
 	UserAgent string
 }
 
+type Namespace struct {
+	Namespace string `json:"Namespace"`
+}
+
+type NamespaceEmail struct {
+	gorm.Model
+
+	Namespace    string `json:"Namespace" gorm:"not null" sql:"unique"`
+	AccountEmail string `json:"AccountEmail" gorm:"not null" sql:"unique"`
+}
+
 type Image struct {
 	gorm.Model
 
